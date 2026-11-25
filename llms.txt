@@ -26,7 +26,7 @@ jobs:
 - Do not set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` or `AWS_PROFILE` in the job. The SDKs use them before the emulator credentials file.
 - Use 127.0.0.1, not localhost, and path-style S3 addresses. AWS SDK for JavaScript v3: set `useQueueUrlAsEndpoint: false` on SQSClient.
 - Pin for reproducible runs: the image by build tag or digest, the action by full commit SHA (`git ls-remote https://github.com/TerraConstructs/run-aws-emulator 'refs/tags/<tag>^{}'`).
-- Verification is built in (`verify: "true"`): the action resolves the image to a digest, runs `cosign verify <repo>@<digest>` with the identity `https://github.com/TerraConstructs/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main` and issuer `https://token.actions.githubusercontent.com`, and starts the container from that digest. Set `verify: "false"` to skip.
+- Verification is built in (`verify: "true"`): the action runs `cosign verify <image>` with the identity `https://github.com/TerraConstructs/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main` and issuer `https://token.actions.githubusercontent.com`, takes the verified digest from the cosign output, and starts the container from `<repo>@<digest>`. Set `verify: "false"` to skip.
 
 ## Docs
 

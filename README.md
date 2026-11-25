@@ -78,14 +78,16 @@ The [image](https://github.com/TerraConstructs/aws-emulator-docker) has a keyles
 signature from its release workflow. The action verifies it for you, by default (`verify:
 "true"`):
 
-1. The action resolves the `image` input to a digest. A reference that already has
-   `@sha256:...` uses that digest. Otherwise the action pulls the image if needed (when
-   `pull` is `true` or the image is not local) and reads its repository digest.
-2. It runs `cosign verify <repo>@<digest>` with `certificate-identity` and
-   `certificate-oidc-issuer`. If this fails, the action stops with an error before any
-   container starts.
-3. It starts the container from `<repo>@<digest>`, so the image that runs is exactly the image
-   that was verified, even if the tag moves in between. The `image-digest` output is that digest.
+1. It runs `cosign verify <image>` with `certificate-identity` and `certificate-oidc-issuer`
+   on the `image` input as given (a tag or a `@sha256:...` digest). If this fails, the action
+   stops with an error before any container starts.
+2. It takes the verified digest from the cosign output. This is the digest that carries the
+   signature (the multi-arch index), the same with Docker and Podman. The action does not
+   read the digest from the local engine, because Podman stores the platform manifest digest
+   after a pull, which has no signature.
+3. It pulls `<repo>@<digest>` if `pull` is `true` or the image is not local, and starts the
+   container from `<repo>@<digest>`, so the image that runs is exactly the image that was
+   verified, even if the tag moves in between. The `image-digest` output is that digest.
 
 The action needs `cosign` on the `PATH`. It does not install cosign: a composite action
 cannot pin and verify a download as cleanly as a SHA-pinned action can, so add
@@ -278,10 +280,11 @@ Notes:
   GitHub removes old entries when a repository goes over its cache limit.
 - `actions/cache` saves the cache only when the job succeeds. If the first job fails, the
   next job pulls the image again.
-- After `docker load`, the `image-digest` output can be empty, because a loaded image can
-  have no repository digest. With `verify: "true"` the action then fails, because it has no
-  digest to verify. Pin the image by digest (`repo@sha256:...`), or verify the image before you
-  save it and set `verify: "false"` for the later runs.
+- After `docker load`, the `image-digest` output can be empty when `verify` is `false`, because
+  a loaded image can have no repository digest. With `verify: "true"` the action verifies the
+  reference in the registry and runs `<repo>@<verified digest>`, which it pulls when the
+  loaded image does not have that digest. Pin the image by digest (`repo@sha256:...`), or
+  verify the image before you save it and set `verify: "false"` for the later runs.
 - A fast registry pull can be as quick as a cache restore. Measure both before you keep the cache.
 
 ## FAQ

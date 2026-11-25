@@ -63,6 +63,20 @@ jobs:
           test "$AWS_ENDPOINT_URL" = "$ENDPOINT"
           [[ "$DIGEST" == *@sha256:* ]]
 
+      - name: The container runs the verified index digest (Docker and Podman)
+        env:
+          DIGEST: ${{ steps.emulator.outputs.image-digest }}
+          ENGINE: ${{ matrix.engine }}
+          PORT: ${{ matrix.port }}
+        run: |
+          set -euo pipefail
+          test "$("$ENGINE" inspect -f '{{.Config.Image}}' "aws-emulator-$PORT")" = "$DIGEST"
+          # The digest must be the signed one, not a platform manifest digest.
+          cosign verify "$DIGEST" \
+            --certificate-identity "https://github.com/TerraConstructs/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            >/dev/null
+
       - name: AWS CLI against the emulator
         run: |
           set -euxo pipefail
@@ -231,13 +245,14 @@ jobs:
         run: |
           docker pull -q "$EMULATOR_IMAGE_REPO:latest"
           docker tag "$EMULATOR_IMAGE_REPO:latest" "$EMULATOR_IMAGE_REPO:local-only-pull-false"
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      # The local-only tag does not exist in the registry, so it cannot be verified.
       - name: Run AWS Emulator
         id: emulator
         uses: ./
         with:
           image: ${{ env.EMULATOR_IMAGE_REPO }}:local-only-pull-false
           pull: "false"
+          verify: "false"
       - name: Check the emulator
         env:
           ENDPOINT: ${{ steps.emulator.outputs.endpoint-url }}

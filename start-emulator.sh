@@ -190,7 +190,7 @@ if [ "$rootless" = true ]; then user="0:0"; else user="$(id -u):$(id -g)"; fi
 errfile="$(mktemp "${TMPDIR:-/tmp}/start-emulator.XXXXXX")"
 trap 'rm -f "$errfile"' EXIT
 
-# Select the repository digest that matches the image repository.
+# Normalize an image reference to its full repository name (no tag, no digest).
 normalize_repo() {
   local r="$1" first
   r="${r%%@*}"
@@ -205,8 +205,9 @@ normalize_repo() {
   fi
   printf '%s' "$r"
 }
+# Repository digest from the local engine (used only when verify is false).
 image_digest() {
-  local ref="${1:-$IMAGE}" want d
+  local ref="$IMAGE" want d
   want="$(normalize_repo "$ref")"
   "$ENGINE" image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" 2>/dev/null \
     | while IFS= read -r d; do
@@ -217,44 +218,57 @@ image_digest() {
 }
 
 
-# Signature verification. The script resolves the image to a digest, verifies
-# <repo>@<digest> with cosign, and then runs exactly that reference. A tag that
-# moves after the check cannot change what runs.
+# Signature verification. cosign verifies the image reference as given and
+# reports the digest it verified (the digest of the signed manifest, which for
+# the multi-arch image is the index). The script does not read the digest from
+# the local engine: Docker and Podman store different digests after a pull
+# (index vs platform manifest). It then runs exactly <repo>@<verified digest>,
+# so a tag that moves after the check cannot change what runs.
 RUN_IMAGE="$IMAGE"
 VERIFIED_DIGEST=""
 if [ "$VERIFY" = true ]; then
   command -v cosign >/dev/null 2>&1 \
     || fail "cosign is not installed, so the image signature cannot be verified. Add 'sigstore/cosign-installer' (pinned by commit SHA) before this action, install cosign on the runner, or set the verify input to 'false'."
-  repo="$(normalize_repo "$IMAGE")"
-  case "$IMAGE" in
-    *@sha256:*) digest_ref="$repo@${IMAGE#*@}" ;;
-    *)
-      # Pull when asked, or when the image is not local. Pulling does not run anything.
-      if [ "$PULL" = true ] || ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
-        log "pulling $IMAGE"
-        "$ENGINE" pull -q "$IMAGE" >&2 \
-          || fail "could not pull the image $IMAGE. Check the image name and tag, and the access to the registry."
-      fi
-      digest_ref="$(image_digest "$IMAGE")"
-      [ -n "$digest_ref" ] \
-        || fail "the image $IMAGE has no repository digest, so its signature cannot be verified. Use an image from a registry, or set the verify input to 'false'."
-      ;;
-  esac
-  case "${digest_ref#*@}" in
-    sha256:[0-9a-f][0-9a-f]*) ;;
-    *) fail "could not resolve a sha256 digest for $IMAGE." ;;
-  esac
-  log "verifying the signature of $digest_ref"
+  log "verifying the signature of $IMAGE"
   log "  identity: $CERT_IDENTITY"
-  if ! cosign verify "$digest_ref" \
+  outfile="$(mktemp "${TMPDIR:-/tmp}/start-emulator-cosign.XXXXXX")"
+  if ! cosign verify "$IMAGE" \
     --certificate-identity "$CERT_IDENTITY" \
-    --certificate-oidc-issuer "$CERT_ISSUER" >/dev/null 2>"$errfile"; then
+    --certificate-oidc-issuer "$CERT_ISSUER" \
+    --output json >"$outfile" 2>"$errfile"; then
+    rm -f "$outfile"
     cat "$errfile" >&2
-    fail "the signature of $digest_ref is not valid for the identity '$CERT_IDENTITY' and issuer '$CERT_ISSUER'. No container was started."
+    fail "the signature of $IMAGE is not valid for the identity '$CERT_IDENTITY' and issuer '$CERT_ISSUER'. No container was started."
   fi
+  # Take the verified digest(s) from the cosign JSON (no jq needed). All entries must agree.
+  digests="$(grep -oE '"docker-manifest-digest"[[:space:]]*:[[:space:]]*"sha256:[0-9a-f]+"' "$outfile" \
+    | sed -E 's/.*"(sha256:[0-9a-f]+)"$/\1/' | sort -u || true)"
+  rm -f "$outfile"
+  case "$digests" in
+    sha256:[0-9a-f][0-9a-f]*) ;;
+    *) fail "could not extract a single sha256 digest from the cosign output for $IMAGE (found: ${digests:-none}). No container was started." ;;
+  esac
+  case "$digests" in
+    *"$NL"*) fail "cosign reported more than one digest for $IMAGE: $(printf '%s' "$digests" | tr '\n' ' '). No container was started." ;;
+  esac
+  if [ "${#digests}" -ne 71 ]; then
+    fail "cosign reported an unexpected digest '$digests' for $IMAGE. No container was started."
+  fi
+  case "$IMAGE" in
+    *@sha256:*)
+      [ "${IMAGE#*@}" = "$digests" ] \
+        || fail "cosign verified $digests but the image reference pins ${IMAGE#*@}. No container was started." ;;
+  esac
   log "signature verified"
-  VERIFIED_DIGEST="$digest_ref"
-  RUN_IMAGE="$digest_ref"
+  VERIFIED_DIGEST="$(normalize_repo "$IMAGE")@$digests"
+  RUN_IMAGE="$VERIFIED_DIGEST"
+  # Pull the verified digest (not the tag) when asked or when it is not local, so
+  # that Docker and Podman both fetch the index and pick their platform.
+  if [ "$PULL" = true ] || ! "$ENGINE" image inspect "$RUN_IMAGE" >/dev/null 2>&1; then
+    log "pulling $RUN_IMAGE"
+    "$ENGINE" pull -q "$RUN_IMAGE" >&2 \
+      || fail "could not pull the verified image $RUN_IMAGE. Check the access to the registry."
+  fi
 else
   warn "the image signature is not verified (verify is false)."
 fi

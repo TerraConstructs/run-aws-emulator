@@ -36,8 +36,8 @@ inputs:
     default: ""
   verify:
     description: >-
-      Verify the cosign signature of the image before the start ("true" or "false"). The action
-      resolves the image to a digest, verifies it, and runs that exact digest. cosign must be on
+      Verify the cosign signature of the image before the start ("true" or "false"). cosign verifies
+      the image and reports the verified digest, and the action runs that exact digest. cosign must be on
       the PATH (add sigstore/cosign-installer before this action).
     default: "true"
   certificate-identity:
