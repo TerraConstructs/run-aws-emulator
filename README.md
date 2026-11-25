@@ -1,7 +1,6 @@
 # Run AWS Emulator
 
-[![Test](https://github.com/xSAVIKx/run-aws-emulator/actions/workflows/test.yml/badge.svg)](https://github.com/xSAVIKx/run-aws-emulator/actions/workflows/test.yml)
-[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Run%20AWS%20Emulator-orange?logo=github)](https://github.com/marketplace/actions/run-aws-emulator)
+[![Test](https://github.com/TerraConstructs/run-aws-emulator/actions/workflows/test.yml/badge.svg)](https://github.com/TerraConstructs/run-aws-emulator/actions/workflows/test.yml)
 
 A GitHub Action that runs the [AWS Emulator](https://github.com/aws/aws-emulator), a local
 emulator of the AWS APIs, and points the AWS CLI and SDKs at it. Your tests then call
@@ -9,12 +8,12 @@ STS, S3, DynamoDB, SQS, SNS, Secrets Manager and many other services without an 
 account.
 
 The action runs the multi-arch container image from
-[xSAVIKx/aws-emulator-docker](https://github.com/xSAVIKx/aws-emulator-docker). That
+[TerraConstructs/aws-emulator-docker](https://github.com/TerraConstructs/aws-emulator-docker). That
 image is tested on `linux/amd64` and `linux/arm64`, signed with cosign, and updated within
 one hour of each upstream release.
 
-Write-up with `docker run`, Compose, GitHub Actions and the gotchas:
-[Running AWS Emulator in Docker, on any arch, in CI](https://serhiichuk.dev/blog/aws-emulator-container-image/)
+Based on [xSAVIKx/run-aws-emulator](https://github.com/xSAVIKx/run-aws-emulator) by
+Yurii Serhiichuk (Apache-2.0). See [NOTICE](NOTICE).
 
 > This is an unofficial community action. It is not affiliated with or endorsed by Amazon
 > Web Services.
@@ -27,7 +26,8 @@ jobs:
     runs-on: ubuntu-latest   # any Linux runner with Docker or Podman, x64 or arm64
     steps:
       - uses: actions/checkout@v7
-      - uses: xSAVIKx/run-aws-emulator@v1
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - uses: TerraConstructs/run-aws-emulator@v1
       - run: aws sts get-caller-identity   # "Account": "000000000000"
       - run: make integration-test         # your SDK tests use the emulator
 ```
@@ -46,9 +46,9 @@ else Podman.
 For reproducible runs, pin the image to a build tag or a digest:
 
 ```yaml
-      - uses: xSAVIKx/run-aws-emulator@v1
+      - uses: TerraConstructs/run-aws-emulator@v1
         with:
-          image: ghcr.io/xsavikx/aws-emulator:1.0.322.1
+          image: ghcr.io/terraconstructs/aws-emulator:1.0.322.1
 ```
 
 ## Security
@@ -59,13 +59,13 @@ A tag such as `v1` can move to a new commit. A full commit SHA cannot move. For 
 strictest pin, use the commit of a release and keep the version in a comment:
 
 ```yaml
-      - uses: xSAVIKx/run-aws-emulator@<commit-sha> # v1.1.1
+      - uses: TerraConstructs/run-aws-emulator@<commit-sha> # v1.1.1
 ```
 
 To get the commit SHA of a release, run:
 
 ```sh
-git ls-remote https://github.com/xSAVIKx/run-aws-emulator 'refs/tags/v1.1.1^{}'
+git ls-remote https://github.com/TerraConstructs/run-aws-emulator 'refs/tags/v1.1.1^{}'
 ```
 
 Dependabot and Renovate update this form of pin and its comment. In this repository, a
@@ -74,22 +74,27 @@ bypass it, to move the `v1` tag to a new release.
 
 ### Verify the image signature
 
-The [image](https://github.com/xSAVIKx/aws-emulator-docker) has a keyless cosign signature
-from its release workflow. The `image-digest` output gives the exact image that runs. Verify
-that digest before your tests use the emulator:
+The [image](https://github.com/TerraConstructs/aws-emulator-docker) has a keyless cosign
+signature from its release workflow. The action verifies it for you, by default (`verify:
+"true"`):
 
-```yaml
-      - uses: xSAVIKx/run-aws-emulator@v1
-        id: emulator
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
-      - run: |
-          cosign verify "${{ steps.emulator.outputs.image-digest }}" \
-            --certificate-identity 'https://github.com/xSAVIKx/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main' \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com
-```
+1. The action resolves the `image` input to a digest. A reference that already has
+   `@sha256:...` uses that digest. Otherwise the action pulls the image if needed (when
+   `pull` is `true` or the image is not local) and reads its repository digest.
+2. It runs `cosign verify <repo>@<digest>` with `certificate-identity` and
+   `certificate-oidc-issuer`. If this fails, the action stops with an error before any
+   container starts.
+3. It starts the container from `<repo>@<digest>`, so the image that runs is exactly the image
+   that was verified, even if the tag moves in between. The `image-digest` output is that digest.
 
-If the signature is not correct, `cosign verify` fails and the job stops. The CI of this
-action runs this check on each change.
+The action needs `cosign` on the `PATH`. It does not install cosign: a composite action
+cannot pin and verify a download as cleanly as a SHA-pinned action can, so add
+`sigstore/cosign-installer` (pinned by commit SHA) before it, as in the usage example above.
+If cosign is missing, the action fails with a clear message. To skip the check, set
+`verify: "false"` (the action then prints a warning).
+
+To trust another signer, for example a mirror of the image that you build yourself, set
+`certificate-identity` and `certificate-oidc-issuer`.
 
 ### What a correct signature tells you
 
@@ -103,7 +108,7 @@ Do not give it real AWS credentials or production data.
 
 | Input | Default | Description |
 |---|---|---|
-| `image` | `ghcr.io/xsavikx/aws-emulator:latest` | The image. Use a `-debian` or `-distroless` tag for those variants. |
+| `image` | `ghcr.io/terraconstructs/aws-emulator:latest` | The image. Use a `-debian` or `-distroless` tag for those variants. |
 | `port` | `9297` | The port on `127.0.0.1`, from 1 to 65535. The container uses the same port. |
 | `region` | `us-east-1` | The value of `AWS_REGION` and `AWS_DEFAULT_REGION`. |
 | `telemetry` | `off` | Upstream emulator telemetry, `on` or `off`. `true`, `false`, `1` and `0` also work. |
@@ -111,6 +116,9 @@ Do not give it real AWS credentials or production data.
 | `wait-timeout` | `60` | Seconds to wait until the emulator is healthy. A whole number, 1 or more. |
 | `pull` | `false` | Pull the image before the start, `true` or `false`. |
 | `engine` | (auto) | `docker` or `podman`. Empty means Docker if it is installed, else Podman. |
+| `verify` | `true` | Verify the cosign signature of the image and run the verified digest. Needs `cosign` on the `PATH`. |
+| `certificate-identity` | `https://github.com/TerraConstructs/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main` | The expected signer identity. |
+| `certificate-oidc-issuer` | `https://token.actions.githubusercontent.com` | The expected OIDC issuer. |
 
 The action checks all inputs before it starts a container. If an input is not valid, the
 action stops with a clear message.
@@ -122,7 +130,7 @@ action stops with a clear message.
 | `endpoint-url` | The endpoint, for example `https://127.0.0.1:9297`. |
 | `ca-file` | The emulator CA certificate (PEM). |
 | `container` | The container name (`aws-emulator-<port>`), for `docker logs`. The action sets it also when the start fails. |
-| `image-digest` | The repository digest of the image that runs. Empty if the image has no digest for its repository. |
+| `image-digest` | The repository digest of the image that runs (the verified digest when `verify` is `true`). Empty if the image has no digest for its repository. |
 
 ## Environment for the next steps
 
@@ -173,7 +181,7 @@ container stays after the job. On a self-hosted runner:
 - Stop the container at the end of the job:
 
 ```yaml
-      - uses: xSAVIKx/run-aws-emulator@v1
+      - uses: TerraConstructs/run-aws-emulator@v1
         id: emulator
       # ... your test steps ...
       - if: always()
@@ -187,7 +195,7 @@ Each container has the labels `run-aws-emulator.source` and
 `run-aws-emulator.run-id` (the value of `GITHUB_RUN_ID`). Use them to find old containers.
 
 Tested examples for Python, TypeScript, Java, Go, C# and Rust are in
-[aws-emulator-docker/examples](https://github.com/xSAVIKx/aws-emulator-docker/tree/main/examples).
+[aws-emulator-docker/examples](https://github.com/TerraConstructs/aws-emulator-docker/tree/main/examples).
 
 ## Run the same script on your computer
 
@@ -218,7 +226,7 @@ become ready. It does not set it when an input is not valid, because the action 
 before it starts a container.
 
 ```yaml
-      - uses: xSAVIKx/run-aws-emulator@v1
+      - uses: TerraConstructs/run-aws-emulator@v1
         id: emulator
       - run: make integration-test
       - if: failure()
@@ -239,7 +247,7 @@ The cache saves the time to pull the image. The steps are:
 
 ```yaml
     env:
-      EMULATOR_IMAGE: ghcr.io/xsavikx/aws-emulator:1.0.322.1
+      EMULATOR_IMAGE: ghcr.io/terraconstructs/aws-emulator:1.0.322.1
     steps:
       - id: cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -252,7 +260,7 @@ The cache saves the time to pull the image. The steps are:
           docker save "$EMULATOR_IMAGE" -o ~/emulator-image.tar
       - if: steps.cache.outputs.cache-hit == 'true'
         run: docker load -i ~/emulator-image.tar
-      - uses: xSAVIKx/run-aws-emulator@v1
+      - uses: TerraConstructs/run-aws-emulator@v1
         with:
           image: ${{ env.EMULATOR_IMAGE }}
 ```
@@ -263,7 +271,7 @@ Notes:
 - Pin a build tag or a digest. If you cache a moving tag such as `latest`, the key does
   not change when the tag moves, and the job keeps the old image.
 - The image is large. The
-  [image README](https://github.com/xSAVIKx/aws-emulator-docker#compared-with-the-image-from-the-aws-guide)
+  [image README](https://github.com/TerraConstructs/aws-emulator-docker#compared-with-the-image-from-the-aws-guide)
   lists about 1.4 to 1.5 GB uncompressed for each variant (`linux/amd64`). `docker save`
   writes an uncompressed archive, and `actions/cache` compresses it. This action repository
   did not measure the cache size. Each variant and each architecture is a separate cache entry.
@@ -271,8 +279,9 @@ Notes:
 - `actions/cache` saves the cache only when the job succeeds. If the first job fails, the
   next job pulls the image again.
 - After `docker load`, the `image-digest` output can be empty, because a loaded image can
-  have no repository digest. The `cosign verify` example above then has no digest to
-  verify. Verify the image before you save it, or verify by tag and digest in the cache step.
+  have no repository digest. With `verify: "true"` the action then fails, because it has no
+  digest to verify. Pin the image by digest (`repo@sha256:...`), or verify the image before you
+  save it and set `verify: "false"` for the later runs.
 - A fast registry pull can be as quick as a cache restore. Measure both before you keep the cache.
 
 ### Test all image variants in a matrix
@@ -287,12 +296,12 @@ jobs:
       fail-fast: false
       matrix:
         image:
-          - ghcr.io/xsavikx/aws-emulator:latest
-          - ghcr.io/xsavikx/aws-emulator:debian
-          - ghcr.io/xsavikx/aws-emulator:distroless
+          - ghcr.io/terraconstructs/aws-emulator:latest
+          - ghcr.io/terraconstructs/aws-emulator:debian
+          - ghcr.io/terraconstructs/aws-emulator:distroless
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: xSAVIKx/run-aws-emulator@v1
+      - uses: TerraConstructs/run-aws-emulator@v1
         id: emulator
         with:
           image: ${{ matrix.image }}
@@ -321,7 +330,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: xSAVIKx/run-aws-emulator@v1
+      - uses: TerraConstructs/run-aws-emulator@v1
       - run: make integration-test
   desktop-build:
     needs: emulator-tests
@@ -336,12 +345,13 @@ reach it.
 
 ## License
 
-Apache License 2.0. Copyright 2026 Yurii Serhiichuk.
+Apache License 2.0. Copyright 2026 Yurii Serhiichuk. Modifications by TerraConstructs
+contributors. See [NOTICE](NOTICE).
 
 The AWS Emulator itself is under CC0 1.0 Universal, with code in its `vendor/` directory
 under the Apache License 2.0. "AWS" is a trademark of Amazon.com, Inc. or its affiliates.
 
-## Author
+## Origin
 
-Created and maintained by **Yurii Serhiichuk** ([serhiichuk.dev](https://serhiichuk.dev),
-[@xSAVIKx](https://github.com/xSAVIKx)).
+Derived from [xSAVIKx/run-aws-emulator](https://github.com/xSAVIKx/run-aws-emulator), created
+by Yurii Serhiichuk. Modified and maintained by TerraConstructs contributors.

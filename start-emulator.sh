@@ -12,7 +12,7 @@
 #   ./start-emulator.sh --github-env
 #
 # Settings (environment variables):
-#   EMULATOR_IMAGE      image to run   (default ghcr.io/xsavikx/aws-emulator:latest)
+#   EMULATOR_IMAGE      image to run   (default ghcr.io/terraconstructs/aws-emulator:latest)
 #   EMULATOR_PORT       port 1-65535   (default 9297; the same on the host and in the container)
 #   EMULATOR_NAME       container name (default aws-emulator-<port>)
 #   EMULATOR_TELEMETRY  on or off      (default off; also true/false/1/0)
@@ -21,6 +21,11 @@
 #   EMULATOR_WAIT       seconds to wait until healthy (default 60)
 #   EMULATOR_PULL       "true" to pull the image before the start (default false)
 #   EMULATOR_ENGINE     "docker" or "podman" (default: docker if present, else podman)
+#   EMULATOR_VERIFY     "true" (default) verifies the image signature with cosign before
+#                       the start; "false" skips it. cosign must be on PATH when it is true.
+#   EMULATOR_CERT_IDENTITY     expected signer identity (default: the release workflow of
+#                       TerraConstructs/aws-emulator-docker on refs/heads/main)
+#   EMULATOR_CERT_OIDC_ISSUER  expected OIDC issuer (default https://token.actions.githubusercontent.com)
 #   DO_NOT_TRACK        "1" sets the telemetry to off when EMULATOR_TELEMETRY is not set
 #
 # Besides the emulator files, the script writes two trust files to
@@ -30,7 +35,7 @@
 # package downloads from the internet keep working. If the script cannot
 # make a complete file, it does not set the related variable.
 #
-# Maintainer: Yurii Serhiichuk <yurii@serhiichuk.dev>
+# Derived from xSAVIKx/run-aws-emulator by Yurii Serhiichuk (see NOTICE).
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 
@@ -62,12 +67,15 @@ case "${1:-}" in
 esac
 
 # Validate all settings before the script starts anything.
-IMAGE="${EMULATOR_IMAGE:-ghcr.io/xsavikx/aws-emulator:latest}"
+IMAGE="${EMULATOR_IMAGE:-ghcr.io/terraconstructs/aws-emulator:latest}"
+CERT_IDENTITY="${EMULATOR_CERT_IDENTITY:-https://github.com/TerraConstructs/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main}"
+CERT_ISSUER="${EMULATOR_CERT_OIDC_ISSUER:-https://token.actions.githubusercontent.com}"
 PORT="${EMULATOR_PORT:-9297}"
 MEMORY="${EMULATOR_MEMORY:-2g}"
 REGION="${EMULATOR_REGION:-us-east-1}"
 WAIT="${EMULATOR_WAIT:-60}"
-for setting in EMULATOR_IMAGE EMULATOR_REGION EMULATOR_NAME EMULATOR_MEMORY EMULATOR_ENGINE; do
+for setting in EMULATOR_IMAGE EMULATOR_REGION EMULATOR_NAME EMULATOR_MEMORY EMULATOR_ENGINE \
+  EMULATOR_VERIFY EMULATOR_CERT_IDENTITY EMULATOR_CERT_OIDC_ISSUER; do
   value="${!setting:-}"
   case "$value" in
     *"$NL"* | *"$CR"*) fail "$setting must not contain a line break." ;;
@@ -99,6 +107,24 @@ case "$(lower "${EMULATOR_PULL:-false}")" in
   false | "") PULL=false ;;
   *) fail "EMULATOR_PULL (the pull input) must be 'true' or 'false'. The value is '$EMULATOR_PULL'." ;;
 esac
+
+case "$(lower "${EMULATOR_VERIFY:-true}")" in
+  true | "") VERIFY=true ;;
+  false) VERIFY=false ;;
+  *) fail "EMULATOR_VERIFY (the verify input) must be 'true' or 'false'. The value is '$EMULATOR_VERIFY'." ;;
+esac
+if [ "$VERIFY" = true ]; then
+  case "$CERT_IDENTITY" in
+    *[[:space:]]*) fail "EMULATOR_CERT_IDENTITY (the certificate-identity input) must not contain white space." ;;
+  esac
+  case "$CERT_ISSUER" in
+    https://*) ;;
+    *) fail "EMULATOR_CERT_OIDC_ISSUER (the certificate-oidc-issuer input) must be an https:// URL. The value is '$CERT_ISSUER'." ;;
+  esac
+  case "$CERT_ISSUER" in
+    *[[:space:]]*) fail "EMULATOR_CERT_OIDC_ISSUER (the certificate-oidc-issuer input) must not contain white space." ;;
+  esac
+fi
 
 ENGINE="$(lower "${EMULATOR_ENGINE:-}")"
 case "$ENGINE" in
@@ -164,21 +190,91 @@ if [ "$rootless" = true ]; then user="0:0"; else user="$(id -u):$(id -g)"; fi
 errfile="$(mktemp "${TMPDIR:-/tmp}/start-emulator.XXXXXX")"
 trap 'rm -f "$errfile"' EXIT
 
+# Select the repository digest that matches the image repository.
+normalize_repo() {
+  local r="$1" first
+  r="${r%%@*}"
+  case "${r##*/}" in *:*) r="${r%:*}" ;; esac
+  first="${r%%/*}"
+  if [ "$first" = "$r" ]; then r="docker.io/library/$r"
+  else
+    case "$first" in
+      *.* | *:* | localhost) ;;
+      *) r="docker.io/$r" ;;
+    esac
+  fi
+  printf '%s' "$r"
+}
+image_digest() {
+  local ref="${1:-$IMAGE}" want d
+  want="$(normalize_repo "$ref")"
+  "$ENGINE" image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" 2>/dev/null \
+    | while IFS= read -r d; do
+        if [ -n "$d" ] && [ "$(normalize_repo "$d")" = "$want" ]; then
+          printf '%s\n' "$d"; break
+        fi
+      done || true
+}
+
+
+# Signature verification. The script resolves the image to a digest, verifies
+# <repo>@<digest> with cosign, and then runs exactly that reference. A tag that
+# moves after the check cannot change what runs.
+RUN_IMAGE="$IMAGE"
+VERIFIED_DIGEST=""
+if [ "$VERIFY" = true ]; then
+  command -v cosign >/dev/null 2>&1 \
+    || fail "cosign is not installed, so the image signature cannot be verified. Add 'sigstore/cosign-installer' (pinned by commit SHA) before this action, install cosign on the runner, or set the verify input to 'false'."
+  repo="$(normalize_repo "$IMAGE")"
+  case "$IMAGE" in
+    *@sha256:*) digest_ref="$repo@${IMAGE#*@}" ;;
+    *)
+      # Pull when asked, or when the image is not local. Pulling does not run anything.
+      if [ "$PULL" = true ] || ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
+        log "pulling $IMAGE"
+        "$ENGINE" pull -q "$IMAGE" >&2 \
+          || fail "could not pull the image $IMAGE. Check the image name and tag, and the access to the registry."
+      fi
+      digest_ref="$(image_digest "$IMAGE")"
+      [ -n "$digest_ref" ] \
+        || fail "the image $IMAGE has no repository digest, so its signature cannot be verified. Use an image from a registry, or set the verify input to 'false'."
+      ;;
+  esac
+  case "${digest_ref#*@}" in
+    sha256:[0-9a-f][0-9a-f]*) ;;
+    *) fail "could not resolve a sha256 digest for $IMAGE." ;;
+  esac
+  log "verifying the signature of $digest_ref"
+  log "  identity: $CERT_IDENTITY"
+  if ! cosign verify "$digest_ref" \
+    --certificate-identity "$CERT_IDENTITY" \
+    --certificate-oidc-issuer "$CERT_ISSUER" >/dev/null 2>"$errfile"; then
+    cat "$errfile" >&2
+    fail "the signature of $digest_ref is not valid for the identity '$CERT_IDENTITY' and issuer '$CERT_ISSUER'. No container was started."
+  fi
+  log "signature verified"
+  VERIFIED_DIGEST="$digest_ref"
+  RUN_IMAGE="$digest_ref"
+else
+  warn "the image signature is not verified (verify is false)."
+fi
+
 mkdir -p "$DIR" "$EXTRA"
 "$ENGINE" rm -f "$NAME" >/dev/null 2>&1 || true
-if [ "$PULL" = true ]; then
+if [ "$PULL" = true ] && [ "$VERIFY" != true ]; then
   log "pulling $IMAGE"
   "$ENGINE" pull -q "$IMAGE" >&2 \
     || fail "could not pull the image $IMAGE. Check the image name and tag, and the access to the registry."
 fi
-log "starting $IMAGE as $NAME on 127.0.0.1:$PORT ($ENGINE, user $user)"
+log "starting $RUN_IMAGE as $NAME on 127.0.0.1:$PORT ($ENGINE, user $user)"
 run_emulator() {
   "$ENGINE" run -d --name "$NAME" "$@" \
     -p "127.0.0.1:$PORT:$PORT" --user "$user" \
-    --label "run-aws-emulator.source=https://github.com/xSAVIKx/run-aws-emulator" \
+    --label "run-aws-emulator.source=https://github.com/TerraConstructs/run-aws-emulator" \
+    --label "run-aws-emulator.image=$IMAGE" \
     --label "run-aws-emulator.run-id=${GITHUB_RUN_ID:-local}" \
     -e HOME="$HOME" -e EMULATOR_TELEMETRY="$TELEMETRY" -e EMULATOR_HEALTHCHECK_PORT="$PORT" \
-    -v "$DIR:$DIR" "$IMAGE" -p "$PORT" >/dev/null 2>"$errfile"
+    -v "$DIR:$DIR" "$RUN_IMAGE" -p "$PORT" >/dev/null 2>"$errfile"
 }
 if ! run_emulator --memory="$MEMORY" --memory-swap="$MEMORY"; then
   err="$(cat "$errfile")"
@@ -296,38 +392,12 @@ if [ -n "$keytool_bin" ]; then
   fi
 fi
 
-# Select the repository digest that matches the image repository.
-normalize_repo() {
-  local r="$1" first
-  r="${r%%@*}"
-  case "${r##*/}" in *:*) r="${r%:*}" ;; esac
-  first="${r%%/*}"
-  if [ "$first" = "$r" ]; then r="docker.io/library/$r"
-  else
-    case "$first" in
-      *.* | *:* | localhost) ;;
-      *) r="docker.io/$r" ;;
-    esac
-  fi
-  printf '%s' "$r"
-}
-image_digest() {
-  local want d
-  want="$(normalize_repo "$IMAGE")"
-  "$ENGINE" image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE" 2>/dev/null \
-    | while IFS= read -r d; do
-        if [ -n "$d" ] && [ "$(normalize_repo "$d")" = "$want" ]; then
-          printf '%s\n' "$d"; break
-        fi
-      done || true
-}
-
 if [ "$MODE" = github ]; then
   printf '%s\n' "${vars[@]}" >> "$GITHUB_ENV"
   {
     echo "endpoint-url=https://127.0.0.1:$PORT"
     echo "ca-file=$RUN_DIR/ca.pem"
-    echo "image-digest=$(image_digest)"
+    echo "image-digest=${VERIFIED_DIGEST:-$(image_digest)}"
   } >> "${GITHUB_OUTPUT:-/dev/null}"
 else
   echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE"

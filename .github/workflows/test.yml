@@ -11,6 +11,14 @@ on:
 permissions:
   contents: read
 
+env:
+  # TODO: switch to ghcr.io/terraconstructs/aws-emulator (and drop the identity override,
+  # so the action default applies) once TerraConstructs/aws-emulator-docker has published
+  # and signed that image. Until then the tests run against the upstream image and verify
+  # it with the upstream signer identity, passed explicitly.
+  EMULATOR_IMAGE_REPO: ghcr.io/xsavikx/aws-emulator
+  EMULATOR_CERT_IDENTITY: https://github.com/xSAVIKx/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main
+
 jobs:
   test:
     name: ${{ matrix.runner }} ${{ matrix.engine }} ${{ matrix.variant }} ${{ matrix.port }}
@@ -42,11 +50,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Run AWS Emulator
         id: emulator
         uses: ./
         with:
-          image: ghcr.io/xsavikx/aws-emulator:${{ matrix.variant }}
+          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:${{ matrix.variant }}
           port: ${{ matrix.port }}
           engine: ${{ matrix.engine }}
           pull: "true"
@@ -89,20 +99,94 @@ jobs:
         if: failure()
         run: ${{ matrix.engine }} logs "aws-emulator-${{ matrix.port }}"
 
-  # Verify the image signature with the command that the README shows.
+  # The action verifies the signature by itself and runs the verified digest.
   verify:
-    name: Verify the image signature (README example)
+    name: Verify the image signature (built in)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - id: emulator
         uses: ./
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
-      - run: |
-          cosign verify "${{ steps.emulator.outputs.image-digest }}" \
-            --certificate-identity 'https://github.com/xSAVIKx/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main' \
+        with:
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
+          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
+          verify: "true"
+          pull: "true"
+      - name: The container runs the verified digest
+        env:
+          DIGEST: ${{ steps.emulator.outputs.image-digest }}
+          NAME: ${{ steps.emulator.outputs.container }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" == "$EMULATOR_IMAGE_REPO"@sha256:* ]]
+          test "$(docker inspect -f '{{.Config.Image}}' "$NAME")" = "$DIGEST"
+          # The same check with the cosign command from the README.
+          cosign verify "$DIGEST" \
+            --certificate-identity "$EMULATOR_CERT_IDENTITY" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             >/dev/null
+
+  # A wrong identity must fail before any container starts.
+  verify-negative:
+    name: Verification fails for a wrong identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - name: Run AWS Emulator with a wrong identity (expected to fail)
+        id: wrong
+        continue-on-error: true
+        uses: ./
+        with:
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
+          certificate-identity: https://github.com/example/not-the-signer/.github/workflows/release.yml@refs/heads/main
+      - name: Check that the action failed and no container started
+        env:
+          OUTCOME: ${{ steps.wrong.outcome }}
+        run: |
+          set -euo pipefail
+          echo "outcome=$OUTCOME"
+          test "$OUTCOME" = failure
+          if docker ps -a --format '{{.Names}}' | grep -q '^aws-emulator-'; then echo "a container started"; exit 1; fi
+
+  # Without cosign the action must fail with a clear message, and verify=false must be accepted.
+  verify-no-cosign:
+    name: Verification fails clearly without cosign
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run AWS Emulator without cosign (expected to fail)
+        id: nocosign
+        continue-on-error: true
+        uses: ./
+        with:
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
+      - name: Check the failure
+        env:
+          OUTCOME: ${{ steps.nocosign.outcome }}
+        run: |
+          set -euo pipefail
+          test "$OUTCOME" = failure
+          if command -v cosign >/dev/null; then echo "cosign is on the runner; this check is not valid"; exit 1; fi
+          if EMULATOR_IMAGE="$EMULATOR_IMAGE_REPO:latest" ./start-emulator.sh 2>err.txt; then echo "no failure"; exit 1; fi
+          grep -q "cosign is not installed" err.txt
+          if docker ps -a --format '{{.Names}}' | grep -q '^aws-emulator-'; then echo "a container started"; exit 1; fi
+      - name: Run AWS Emulator with verify false
+        uses: ./
+        with:
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
+          verify: "false"
+          pull: "true"
 
   # Runners without Docker for Linux containers must fail early with a clear message.
   unsupported:
@@ -140,7 +224,8 @@ jobs:
         run: |
           set -u
           for setting in EMULATOR_WAIT=abc EMULATOR_PORT=0 EMULATOR_PORT=70000 EMULATOR_TELEMETRY=maybe \
-            EMULATOR_PULL=yes EMULATOR_ENGINE=nerdctl "EMULATOR_REGION=us-east-1$(printf '\nX=1')"; do
+            EMULATOR_PULL=yes EMULATOR_ENGINE=nerdctl EMULATOR_VERIFY=maybe \
+            EMULATOR_CERT_OIDC_ISSUER=http://insecure "EMULATOR_CERT_IDENTITY=a$(printf '\nb')" "EMULATOR_REGION=us-east-1$(printf '\nX=1')"; do
             if env "$setting" ./start-emulator.sh; then echo "no failure for $setting"; exit 1; fi
           done
           if docker ps -a --format '{{.Names}}' | grep -q '^aws-emulator-'; then echo "a container started"; exit 1; fi
@@ -157,13 +242,15 @@ jobs:
           persist-credentials: false
       - name: Pull the image manually and give it a local-only tag
         run: |
-          docker pull -q ghcr.io/xsavikx/aws-emulator:latest
-          docker tag ghcr.io/xsavikx/aws-emulator:latest ghcr.io/xsavikx/aws-emulator:local-only-pull-false
+          docker pull -q "$EMULATOR_IMAGE_REPO:latest"
+          docker tag "$EMULATOR_IMAGE_REPO:latest" "$EMULATOR_IMAGE_REPO:local-only-pull-false"
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Run AWS Emulator
         id: emulator
         uses: ./
         with:
-          image: ghcr.io/xsavikx/aws-emulator:local-only-pull-false
+          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:local-only-pull-false
           pull: "false"
       - name: Check the emulator
         env:
@@ -173,7 +260,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "endpoint=$ENDPOINT digest=$DIGEST"
-          [[ "$DIGEST" == ghcr.io/xsavikx/aws-emulator@sha256:* ]]
+          [[ "$DIGEST" == "$EMULATOR_IMAGE_REPO"@sha256:* ]]
           curl -fsS --cacert "$CA" "$ENDPOINT/__admin/health"
       - name: Emulator logs
         if: failure()
@@ -188,11 +275,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Run AWS Emulator
         id: emulator
         uses: ./
         with:
-          image: ghcr.io/xsavikx/aws-emulator:1.0.322.1
+          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:1.0.322.1
           pull: "true"
       - name: Check the emulator
         env:
@@ -200,8 +289,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "digest=$DIGEST"
-          [[ "$DIGEST" == ghcr.io/xsavikx/aws-emulator@sha256:* ]]
-          test "$(docker inspect -f '{{.Config.Image}}' aws-emulator-9297)" = ghcr.io/xsavikx/aws-emulator:1.0.322.1
+          [[ "$DIGEST" == "$EMULATOR_IMAGE_REPO"@sha256:* ]]
+          # The container runs the verified digest. The label keeps the requested reference.
+          test "$(docker inspect -f '{{.Config.Image}}' aws-emulator-9297)" = "$DIGEST"
+          test "$(docker inspect -f '{{index .Config.Labels "run-aws-emulator.image"}}' aws-emulator-9297)" = "$EMULATOR_IMAGE_REPO:1.0.322.1"
           test "$(aws sts get-caller-identity --query Account --output text)" = 000000000000
       - name: Emulator logs
         if: failure()
@@ -216,16 +307,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Run the first AWS Emulator
         id: first
         uses: ./
         with:
+          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
           port: "9297"
           pull: "true"
       - name: Run the second AWS Emulator
         id: second
         uses: ./
         with:
+          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
           port: "9298"
       - name: Check that both emulators answer
         env:
@@ -280,10 +376,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Run AWS Emulator
         id: emulator
         uses: ./
         with:
+          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
           pull: "true"
           region: eu-central-1
           memory: 3g
@@ -324,10 +423,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Run AWS Emulator
         id: emulator
         uses: ./
         with:
+          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
           port: "9299"
           pull: "true"
       - name: Stop the emulator
@@ -370,10 +472,13 @@ jobs:
           cd "$RUNNER_TEMP/js"
           npm init -y >/dev/null
           npm install --no-audit --no-fund --save-exact @aws-sdk/client-s3@3.1172.0
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Run AWS Emulator
         id: emulator
         uses: ./
         with:
+          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
           pull: "true"
       - name: Python boto3 (S3 and SQS)
         run: |

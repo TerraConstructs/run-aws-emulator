@@ -1,6 +1,6 @@
 name: Run AWS Emulator
 description: "Run the AWS Emulator (local AWS APIs) in Docker and point the AWS CLI and SDKs at it. Unofficial community action."
-author: Yurii Serhiichuk
+author: TerraConstructs contributors (derived from xSAVIKx/run-aws-emulator by Yurii Serhiichuk)
 branding:
   icon: cloud
   color: orange
@@ -9,9 +9,9 @@ inputs:
   image:
     description: >-
       Container image to run. Pin a build tag or a digest for reproducible runs, for example
-      ghcr.io/xsavikx/aws-emulator:1.0.322.1 or ghcr.io/xsavikx/aws-emulator@sha256:...
+      ghcr.io/terraconstructs/aws-emulator:1.0.322.1 or ghcr.io/terraconstructs/aws-emulator@sha256:...
       Use the ":debian" tags for the Debian variant.
-    default: ghcr.io/xsavikx/aws-emulator:latest
+    default: ghcr.io/terraconstructs/aws-emulator:latest
   port:
     description: Port on 127.0.0.1, from 1 to 65535. The emulator uses the same port inside the container.
     default: "9297"
@@ -35,6 +35,18 @@ inputs:
       Container engine, "docker" or "podman". Empty means Docker if it is installed,
       else Podman.
     default: ""
+  verify:
+    description: >-
+      Verify the cosign signature of the image before the start ("true" or "false"). The action
+      resolves the image to a digest, verifies it, and runs that exact digest. cosign must be on
+      the PATH (add sigstore/cosign-installer before this action).
+    default: "true"
+  certificate-identity:
+    description: Expected signer identity of the image signature (cosign --certificate-identity).
+    default: https://github.com/TerraConstructs/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main
+  certificate-oidc-issuer:
+    description: Expected OIDC issuer of the image signature (cosign --certificate-oidc-issuer).
+    default: https://token.actions.githubusercontent.com
 
 outputs:
   endpoint-url:
@@ -47,7 +59,7 @@ outputs:
     description: The container name (aws-emulator-<port>). Use it with "docker logs". The action sets it also when the start fails.
     value: ${{ steps.start.outputs.container }}
   image-digest:
-    description: The repository digest of the image that runs. Empty if the image has no digest for its repository.
+    description: The repository digest of the image that runs. When verify is true, this is the verified digest and the container runs from it. Empty if the image has no digest for its repository.
     value: ${{ steps.start.outputs.image-digest }}
 
 runs:
@@ -64,4 +76,7 @@ runs:
         EMULATOR_WAIT: ${{ inputs.wait-timeout }}
         EMULATOR_PULL: ${{ inputs.pull }}
         EMULATOR_ENGINE: ${{ inputs.engine }}
+        EMULATOR_VERIFY: ${{ inputs.verify }}
+        EMULATOR_CERT_IDENTITY: ${{ inputs.certificate-identity }}
+        EMULATOR_CERT_OIDC_ISSUER: ${{ inputs.certificate-oidc-issuer }}
       run: '"$GITHUB_ACTION_PATH/start-emulator.sh" --github-env'

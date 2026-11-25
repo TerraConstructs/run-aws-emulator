@@ -1,0 +1,9 @@
+Run AWS Emulator (TerraConstructs/run-aws-emulator)
+
+This product is derived from xSAVIKx/run-aws-emulator
+(https://github.com/xSAVIKx/run-aws-emulator), Copyright 2026 Yurii Serhiichuk,
+licensed under the Apache License, Version 2.0.
+
+Modifications Copyright TerraConstructs contributors: the default image and
+registry paths, built-in cosign signature verification of the image (the action
+runs the verified digest), and the CI workflow.
