@@ -10,7 +10,6 @@ inputs:
     description: >-
       Container image to run. Pin a build tag or a digest for reproducible runs, for example
       ghcr.io/terraconstructs/aws-emulator:1.0.322.1 or ghcr.io/terraconstructs/aws-emulator@sha256:...
-      Use the ":debian" tags for the Debian variant.
     default: ghcr.io/terraconstructs/aws-emulator:latest
   port:
     description: Port on 127.0.0.1, from 1 to 65535. The emulator uses the same port inside the container.
