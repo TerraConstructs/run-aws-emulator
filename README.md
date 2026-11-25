@@ -48,7 +48,7 @@ For reproducible runs, pin the image to a build tag or a digest:
 ```yaml
       - uses: TerraConstructs/run-aws-emulator@v1
         with:
-          image: ghcr.io/terraconstructs/aws-emulator:1.0.322.1
+          image: ghcr.io/terraconstructs/aws-emulator:1.0.598.1
 ```
 
 ## Security
@@ -108,7 +108,7 @@ Do not give it real AWS credentials or production data.
 
 | Input | Default | Description |
 |---|---|---|
-| `image` | `ghcr.io/terraconstructs/aws-emulator:latest` | The image. Use a `-debian` or `-distroless` tag for those variants. |
+| `image` | `ghcr.io/terraconstructs/aws-emulator:latest` | The image. |
 | `port` | `9297` | The port on `127.0.0.1`, from 1 to 65535. The container uses the same port. |
 | `region` | `us-east-1` | The value of `AWS_REGION` and `AWS_DEFAULT_REGION`. |
 | `telemetry` | `off` | Upstream emulator telemetry, `on` or `off`. `true`, `false`, `1` and `0` also work. |
@@ -247,7 +247,7 @@ The cache saves the time to pull the image. The steps are:
 
 ```yaml
     env:
-      EMULATOR_IMAGE: ghcr.io/terraconstructs/aws-emulator:1.0.322.1
+      EMULATOR_IMAGE: ghcr.io/terraconstructs/aws-emulator:1.0.598.1
     steps:
       - id: cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -272,9 +272,9 @@ Notes:
   not change when the tag moves, and the job keeps the old image.
 - The image is large. The
   [image README](https://github.com/TerraConstructs/aws-emulator-docker#compared-with-the-image-from-the-aws-guide)
-  lists about 1.4 to 1.5 GB uncompressed for each variant (`linux/amd64`). `docker save`
+  lists the uncompressed size (`linux/amd64`). `docker save`
   writes an uncompressed archive, and `actions/cache` compresses it. This action repository
-  did not measure the cache size. Each variant and each architecture is a separate cache entry.
+  did not measure the cache size. Each architecture is a separate cache entry.
   GitHub removes old entries when a repository goes over its cache limit.
 - `actions/cache` saves the cache only when the job succeeds. If the first job fails, the
   next job pulls the image again.
@@ -283,35 +283,6 @@ Notes:
   digest to verify. Pin the image by digest (`repo@sha256:...`), or verify the image before you
   save it and set `verify: "false"` for the later runs.
 - A fast registry pull can be as quick as a cache restore. Measure both before you keep the cache.
-
-### Test all image variants in a matrix
-
-The `image` input selects the variant. Use the `:debian` or `:distroless` tag for those variants.
-
-```yaml
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        image:
-          - ghcr.io/terraconstructs/aws-emulator:latest
-          - ghcr.io/terraconstructs/aws-emulator:debian
-          - ghcr.io/terraconstructs/aws-emulator:distroless
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: TerraConstructs/run-aws-emulator@v1
-        id: emulator
-        with:
-          image: ${{ matrix.image }}
-      - run: make integration-test
-      - if: failure()
-        run: docker logs "${{ steps.emulator.outputs.container }}"
-```
-
-The matrix jobs run in parallel on separate runners, so each job can use the default `port`.
-On a self-hosted runner, give each concurrent job a unique `port`.
 
 ## FAQ
 

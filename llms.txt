@@ -20,7 +20,7 @@ jobs:
 ## Key facts
 
 - Runners: `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-26.04` and their `-arm` variants are tested. Self-hosted Linux with Docker or Podman (also rootless) works. GitHub-hosted macOS, Windows and `ubuntu-slim` are not supported, and the action stops at once with a clear message.
-- Inputs: `image` (default `ghcr.io/terraconstructs/aws-emulator:latest`; use a `-debian` or `-distroless` tag for other variants), `port` (9297), `region` (us-east-1), `telemetry` (off), `memory` (2g), `wait-timeout` (60), `pull` (false), `engine` (docker or podman, auto by default), `verify` (true), `certificate-identity` (TerraConstructs aws-emulator-docker release workflow), `certificate-oidc-issuer` (GitHub Actions).
+- Inputs: `image` (default `ghcr.io/terraconstructs/aws-emulator:latest`), `port` (9297), `region` (us-east-1), `telemetry` (off), `memory` (2g), `wait-timeout` (60), `pull` (false), `engine` (docker or podman, auto by default), `verify` (true), `certificate-identity` (TerraConstructs aws-emulator-docker release workflow), `certificate-oidc-issuer` (GitHub Actions).
 - Outputs: `endpoint-url`, `ca-file`, `container`, `image-digest`.
 - Environment for the next steps: `AWS_ENDPOINT_URL`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE`, `AWS_CA_BUNDLE`, `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_EC2_METADATA_DISABLED`, `AWS_DISABLE_HOST_PREFIX_INJECTION`, `AWS_EMULATOR_CA`, `AWS_EMULATOR_JAVA_TRUSTSTORE`, `NODE_EXTRA_CA_CERTS`, and, when the combined trust files are complete, `SSL_CERT_FILE` and `JAVA_TOOL_OPTIONS`.
 - Do not set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` or `AWS_PROFILE` in the job. The SDKs use them before the emulator credentials file.

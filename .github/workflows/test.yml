@@ -12,16 +12,11 @@ permissions:
   contents: read
 
 env:
-  # TODO: switch to ghcr.io/terraconstructs/aws-emulator (and drop the identity override,
-  # so the action default applies) once TerraConstructs/aws-emulator-docker has published
-  # and signed that image. Until then the tests run against the upstream image and verify
-  # it with the upstream signer identity, passed explicitly.
-  EMULATOR_IMAGE_REPO: ghcr.io/xsavikx/aws-emulator
-  EMULATOR_CERT_IDENTITY: https://github.com/xSAVIKx/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main
+  EMULATOR_IMAGE_REPO: ghcr.io/terraconstructs/aws-emulator
 
 jobs:
   test:
-    name: ${{ matrix.runner }} ${{ matrix.engine }} ${{ matrix.variant }} ${{ matrix.port }}
+    name: ${{ matrix.runner }} ${{ matrix.engine }} ${{ matrix.port }}
     strategy:
       fail-fast: false
       matrix:
@@ -31,18 +26,12 @@ jobs:
           - ubuntu-24.04-arm
           - ubuntu-26.04
           - ubuntu-26.04-arm
-        variant: [latest]
         engine: [docker]
         port: ["9297"]
         include:
-          - { runner: ubuntu-24.04, variant: debian, engine: docker, port: "9297" }
-          - { runner: ubuntu-24.04-arm, variant: debian, engine: docker, port: "9297" }
-          - { runner: ubuntu-24.04, variant: distroless, engine: docker, port: "9297" }
-          - { runner: ubuntu-24.04-arm, variant: distroless, engine: docker, port: "9297" }
-          - { runner: ubuntu-26.04, variant: distroless, engine: podman, port: "9297" }
-          - { runner: ubuntu-24.04, variant: latest, engine: docker, port: "19300" }
-          - { runner: ubuntu-24.04, variant: latest, engine: podman, port: "9297" }
-          - { runner: ubuntu-26.04, variant: latest, engine: podman, port: "9297" }
+          - { runner: ubuntu-24.04, engine: docker, port: "19300" }
+          - { runner: ubuntu-24.04, engine: podman, port: "9297" }
+          - { runner: ubuntu-26.04, engine: podman, port: "9297" }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
@@ -55,8 +44,7 @@ jobs:
         id: emulator
         uses: ./
         with:
-          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
-          image: ${{ env.EMULATOR_IMAGE_REPO }}:${{ matrix.variant }}
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
           port: ${{ matrix.port }}
           engine: ${{ matrix.engine }}
           pull: "true"
@@ -113,7 +101,6 @@ jobs:
         uses: ./
         with:
           image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
-          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
           verify: "true"
           pull: "true"
       - name: The container runs the verified digest
@@ -126,7 +113,7 @@ jobs:
           test "$(docker inspect -f '{{.Config.Image}}' "$NAME")" = "$DIGEST"
           # The same check with the cosign command from the README.
           cosign verify "$DIGEST" \
-            --certificate-identity "$EMULATOR_CERT_IDENTITY" \
+            --certificate-identity "https://github.com/TerraConstructs/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             >/dev/null
 
@@ -249,7 +236,6 @@ jobs:
         id: emulator
         uses: ./
         with:
-          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
           image: ${{ env.EMULATOR_IMAGE_REPO }}:local-only-pull-false
           pull: "false"
       - name: Check the emulator
@@ -280,8 +266,7 @@ jobs:
         id: emulator
         uses: ./
         with:
-          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
-          image: ${{ env.EMULATOR_IMAGE_REPO }}:1.0.322.1
+          image: ${{ env.EMULATOR_IMAGE_REPO }}:1.0.598.1
           pull: "true"
       - name: Check the emulator
         env:
@@ -292,7 +277,7 @@ jobs:
           [[ "$DIGEST" == "$EMULATOR_IMAGE_REPO"@sha256:* ]]
           # The container runs the verified digest. The label keeps the requested reference.
           test "$(docker inspect -f '{{.Config.Image}}' aws-emulator-9297)" = "$DIGEST"
-          test "$(docker inspect -f '{{index .Config.Labels "run-aws-emulator.image"}}' aws-emulator-9297)" = "$EMULATOR_IMAGE_REPO:1.0.322.1"
+          test "$(docker inspect -f '{{index .Config.Labels "run-aws-emulator.image"}}' aws-emulator-9297)" = "$EMULATOR_IMAGE_REPO:1.0.598.1"
           test "$(aws sts get-caller-identity --query Account --output text)" = 000000000000
       - name: Emulator logs
         if: failure()
@@ -312,7 +297,6 @@ jobs:
         id: first
         uses: ./
         with:
-          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
           image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
           port: "9297"
           pull: "true"
@@ -320,7 +304,6 @@ jobs:
         id: second
         uses: ./
         with:
-          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
           image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
           port: "9298"
       - name: Check that both emulators answer
@@ -381,7 +364,6 @@ jobs:
         id: emulator
         uses: ./
         with:
-          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
           image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
           pull: "true"
           region: eu-central-1
@@ -428,7 +410,6 @@ jobs:
         id: emulator
         uses: ./
         with:
-          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
           image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
           port: "9299"
           pull: "true"
@@ -477,7 +458,6 @@ jobs:
         id: emulator
         uses: ./
         with:
-          certificate-identity: ${{ env.EMULATOR_CERT_IDENTITY }}
           image: ${{ env.EMULATOR_IMAGE_REPO }}:latest
           pull: "true"
       - name: Python boto3 (S3 and SQS)
